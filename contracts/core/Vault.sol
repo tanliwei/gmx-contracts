@@ -11,6 +11,7 @@ import "../tokens/interfaces/IUSDG.sol";
 import "./interfaces/IVault.sol";
 import "./interfaces/IVaultUtils.sol";
 import "./interfaces/IVaultPriceFeed.sol";
+import "hardhat/console.sol";
 
 contract Vault is ReentrancyGuard, IVault {
     using SafeMath for uint256;
@@ -52,7 +53,7 @@ contract Vault is ReentrancyGuard, IVault {
 
     uint256 public override whitelistedTokenCount;
 
-    uint256 public override maxLeverage = 50 * 10000; // 50x
+    uint256 public override maxLeverage = 100 * 10000; // 100x
 
     uint256 public override liquidationFeeUsd;
     uint256 public override taxBasisPoints = 50; // 0.5%
@@ -177,6 +178,9 @@ contract Vault is ReentrancyGuard, IVault {
     );
     event UpdatePosition(
         bytes32 key,
+        address account,
+        address collateralToken,
+        address indexToken,
         uint256 size,
         uint256 collateral,
         uint256 averagePrice,
@@ -187,6 +191,9 @@ contract Vault is ReentrancyGuard, IVault {
     );
     event ClosePosition(
         bytes32 key,
+        address account,
+        address collateralToken,
+        address indexToken,
         uint256 size,
         uint256 collateral,
         uint256 averagePrice,
@@ -625,7 +632,7 @@ contract Vault is ReentrancyGuard, IVault {
         }
 
         emit IncreasePosition(key, _account, _collateralToken, _indexToken, collateralDeltaUsd, _sizeDelta, _isLong, price, fee);
-        emit UpdatePosition(key, position.size, position.collateral, position.averagePrice, position.entryFundingRate, position.reserveAmount, position.realisedPnl, price);
+        emit UpdatePosition(key, _account, _collateralToken, _indexToken, position.size, position.collateral, position.averagePrice, position.entryFundingRate, position.reserveAmount, position.realisedPnl, price);
     }
 
     function decreasePosition(address _account, address _collateralToken, address _indexToken, uint256 _collateralDelta, uint256 _sizeDelta, bool _isLong, address _receiver) external override nonReentrant returns (uint256) {
@@ -668,7 +675,7 @@ contract Vault is ReentrancyGuard, IVault {
 
             uint256 price = _isLong ? getMinPrice(_indexToken) : getMaxPrice(_indexToken);
             emit DecreasePosition(key, _account, _collateralToken, _indexToken, _collateralDelta, _sizeDelta, _isLong, price, usdOut.sub(usdOutAfterFee));
-            emit UpdatePosition(key, position.size, position.collateral, position.averagePrice, position.entryFundingRate, position.reserveAmount, position.realisedPnl, price);
+            emit UpdatePosition(key, _account, _collateralToken, _indexToken, position.size, position.collateral, position.averagePrice, position.entryFundingRate, position.reserveAmount, position.realisedPnl, price);
         } else {
             if (_isLong) {
                 _increaseGuaranteedUsd(_collateralToken, collateral);
@@ -677,7 +684,7 @@ contract Vault is ReentrancyGuard, IVault {
 
             uint256 price = _isLong ? getMinPrice(_indexToken) : getMaxPrice(_indexToken);
             emit DecreasePosition(key, _account, _collateralToken, _indexToken, _collateralDelta, _sizeDelta, _isLong, price, usdOut.sub(usdOutAfterFee));
-            emit ClosePosition(key, position.size, position.collateral, position.averagePrice, position.entryFundingRate, position.reserveAmount, position.realisedPnl);
+            emit ClosePosition(key, _account, _collateralToken, _indexToken, position.size, position.collateral, position.averagePrice, position.entryFundingRate, position.reserveAmount, position.realisedPnl);
 
             delete positions[key];
         }
