@@ -16,7 +16,7 @@ use(solidity);
 
 const { AddressZero } = ethers.constants;
 
-describe("Timelock", function () {
+describe("KtxTimelock", function () {
   const provider = waffle.provider;
   const [
     wallet,
@@ -27,7 +27,6 @@ describe("Timelock", function () {
     rewardManager,
     tokenManager,
     mintReceiver,
-    positionRouter,
   ] = provider.getWallets();
   let vault;
   let vaultUtils;
@@ -43,8 +42,6 @@ describe("Timelock", function () {
   let distributor0;
   let yieldTracker0;
   let timelock;
-  let fastPriceEvents;
-  let fastPriceFeed;
 
   beforeEach(async () => {
     bnb = await deployContract("Token", []);
@@ -88,17 +85,14 @@ describe("Timelock", function () {
 
     await vault.setPriceFeed(user3.address);
 
-    timelock = await deployContract("Timelock", [
+    timelock = await deployContract("KtxTimelock", [
       wallet.address,
       5 * 24 * 60 * 60,
-      tokenManager.address,
-      mintReceiver.address,
-      tokenManager.address,
-      mintReceiver.address,
+      7 * 24 * 60 * 60,
       rewardManager.address,
+      tokenManager.address,
+      mintReceiver.address,
       expandDecimals(1000, 18),
-      50, // marginFeeBasisPoints 0.5%
-      500, // maxMarginFeeBasisPoints 5%
     ]);
     await vault.setGov(timelock.address);
 
@@ -117,18 +111,6 @@ describe("Timelock", function () {
 
     await vaultPriceFeed.setGov(timelock.address);
     await router.setGov(timelock.address);
-
-    fastPriceEvents = await deployContract("FastPriceEvents", []);
-    fastPriceFeed = await deployContract("FastPriceFeed", [
-      5 * 60, // _priceDuration
-      2, // _minBlockInterval
-      250, // _maxDeviationBasisPoints
-      fastPriceEvents.address, // _fastPriceEvents
-      tokenManager.address, // _tokenManager
-      positionRouter.address, // _positionRouter
-    ]);
-
-    await fastPriceFeed.setGov(timelock.address);
   });
 
   it("inits", async () => {
@@ -149,19 +131,28 @@ describe("Timelock", function () {
     expect(await timelock.maxTokenSupply()).eq(expandDecimals(1000, 18));
 
     await expect(
-      deployContract("Timelock", [
+      deployContract("KtxTimelock", [
         wallet.address,
-        5 * 24 * 60 * 60 + 1,
+        7 * 24 * 60 * 60 + 1,
+        7 * 24 + 60 * 60,
+        rewardManager.address,
         tokenManager.address,
         mintReceiver.address,
+        1000,
+      ])
+    ).to.be.revertedWith("KtxTimelock: invalid _buffer");
+
+    await expect(
+      deployContract("KtxTimelock", [
+        wallet.address,
+        7 * 24 * 60 * 60,
+        7 * 24 * 60 * 60 + 1,
         rewardManager.address,
         tokenManager.address,
-        rewardManager.address,
+        mintReceiver.address,
         1000,
-        10,
-        100,
       ])
-    ).to.be.revertedWith("Timelock: invalid _buffer");
+    ).to.be.revertedWith("KtxTimelock: invalid _longBuffer");
   });
 
   it("setTokenConfig", async () => {
@@ -180,13 +171,13 @@ describe("Timelock", function () {
       timelock
         .connect(user0)
         .setTokenConfig(vault.address, bnb.address, 100, 200, 1000, 0, 0)
-    ).to.be.revertedWith("Timelock: forbidden");
+    ).to.be.revertedWith("KtxTimelock: forbidden");
 
     await expect(
       timelock
         .connect(wallet)
         .setTokenConfig(vault.address, bnb.address, 100, 200, 1000, 0, 0)
-    ).to.be.revertedWith("Timelock: token not yet whitelisted");
+    ).to.be.revertedWith("KtxTimelock: token not yet whitelisted");
 
     await timelock.connect(wallet).signalVaultSetTokenConfig(
       vault.address,
@@ -244,56 +235,77 @@ describe("Timelock", function () {
     expect(await vault.shortableTokens(bnb.address)).eq(true);
     expect(await vault.bufferAmounts(bnb.address)).eq(300);
     expect(await vault.usdgAmounts(bnb.address)).eq(500);
-
-    await timelock.setContractHandler(user0.address, true);
-
-    await timelock.connect(user0).setTokenConfig(
-      vault.address,
-      bnb.address,
-      100, // _tokenWeight
-      50, // _minProfitBps
-      1000, // _maxUsdgAmount
-      300, // _bufferAmount
-      500 // _usdgAmount
-    );
-
-    expect(await vault.minProfitBasisPoints(bnb.address)).eq(50);
   });
 
   it("setBuffer", async () => {
-    const timelock0 = await deployContract("Timelock", [
+    const timelock0 = await deployContract("KtxTimelock", [
       user1.address,
       3 * 24 * 60 * 60,
+      7 * 24 * 60 * 60,
+      rewardManager.address,
       tokenManager.address,
       mintReceiver.address,
-      rewardManager.address,
-      tokenManager.address,
-      rewardManager.address,
       1000,
-      10,
-      100,
     ]);
     await expect(
       timelock0.connect(user0).setBuffer(3 * 24 * 60 * 60 - 10)
-    ).to.be.revertedWith("Timelock: forbidden");
+    ).to.be.revertedWith("KtxTimelock: forbidden");
 
     await expect(
-      timelock0.connect(user1).setBuffer(5 * 24 * 60 * 60 + 10)
-    ).to.be.revertedWith("Timelock: invalid _buffer");
+      timelock0.connect(user1).setBuffer(7 * 24 * 60 * 60 + 10)
+    ).to.be.revertedWith("KtxTimelock: invalid _buffer");
 
     await expect(
       timelock0.connect(user1).setBuffer(3 * 24 * 60 * 60 - 10)
-    ).to.be.revertedWith("Timelock: buffer cannot be decreased");
+    ).to.be.revertedWith("KtxTimelock: buffer cannot be decreased");
 
     expect(await timelock0.buffer()).eq(3 * 24 * 60 * 60);
     await timelock0.connect(user1).setBuffer(3 * 24 * 60 * 60 + 10);
     expect(await timelock0.buffer()).eq(3 * 24 * 60 * 60 + 10);
   });
 
+  it("setIsAmmEnabled", async () => {
+    await expect(
+      timelock.connect(user0).setIsAmmEnabled(vaultPriceFeed.address, false)
+    ).to.be.revertedWith("KtxTimelock: forbidden");
+
+    expect(await vaultPriceFeed.isAmmEnabled()).eq(false);
+    await timelock
+      .connect(wallet)
+      .setIsAmmEnabled(vaultPriceFeed.address, false);
+    expect(await vaultPriceFeed.isAmmEnabled()).eq(false);
+  });
+
+  it("setMaxStrictPriceDeviation", async () => {
+    await expect(
+      timelock
+        .connect(user0)
+        .setMaxStrictPriceDeviation(vaultPriceFeed.address, 100)
+    ).to.be.revertedWith("KtxTimelock: forbidden");
+
+    expect(await vaultPriceFeed.maxStrictPriceDeviation()).eq(0);
+    await timelock
+      .connect(wallet)
+      .setMaxStrictPriceDeviation(vaultPriceFeed.address, 100);
+    expect(await vaultPriceFeed.maxStrictPriceDeviation()).eq(100);
+  });
+
+  it("setPriceSampleSpace", async () => {
+    await expect(
+      timelock.connect(user0).setPriceSampleSpace(vaultPriceFeed.address, 0)
+    ).to.be.revertedWith("KtxTimelock: forbidden");
+
+    expect(await vaultPriceFeed.priceSampleSpace()).eq(3);
+    await timelock
+      .connect(wallet)
+      .setPriceSampleSpace(vaultPriceFeed.address, 1);
+    expect(await vaultPriceFeed.priceSampleSpace()).eq(1);
+  });
+
   it("setVaultUtils", async () => {
     await expect(
       timelock.connect(user0).setVaultUtils(vault.address, user1.address)
-    ).to.be.revertedWith("Timelock: forbidden");
+    ).to.be.revertedWith("KtxTimelock: forbidden");
 
     expect(await vault.vaultUtils()).eq(vaultUtils.address);
     await timelock.connect(wallet).setVaultUtils(vault.address, user1.address);
@@ -303,7 +315,7 @@ describe("Timelock", function () {
   it("setIsSwapEnabled", async () => {
     await expect(
       timelock.connect(user0).setIsSwapEnabled(vault.address, false)
-    ).to.be.revertedWith("Timelock: forbidden");
+    ).to.be.revertedWith("KtxTimelock: forbidden");
 
     expect(await vault.isSwapEnabled()).eq(true);
     await timelock.connect(wallet).setIsSwapEnabled(vault.address, false);
@@ -313,7 +325,7 @@ describe("Timelock", function () {
   it("setContractHandler", async () => {
     await expect(
       timelock.connect(user0).setContractHandler(user1.address, true)
-    ).to.be.revertedWith("Timelock: forbidden");
+    ).to.be.revertedWith("KtxTimelock: forbidden");
 
     expect(await timelock.isHandler(user1.address)).eq(false);
     await timelock.connect(wallet).setContractHandler(user1.address, true);
@@ -323,14 +335,25 @@ describe("Timelock", function () {
   it("setIsLeverageEnabled", async () => {
     await expect(
       timelock.connect(user0).setIsLeverageEnabled(vault.address, false)
-    ).to.be.revertedWith("Timelock: forbidden");
+    ).to.be.revertedWith("KtxTimelock: forbidden");
 
     expect(await vault.isLeverageEnabled()).eq(true);
     await timelock.connect(wallet).setIsLeverageEnabled(vault.address, false);
     expect(await vault.isLeverageEnabled()).eq(false);
 
-    await timelock.connect(wallet).setIsLeverageEnabled(vault.address, true);
+    await expect(
+      timelock.connect(user1).setIsLeverageEnabled(vault.address, false)
+    ).to.be.revertedWith("KtxTimelock: forbidden");
+
+    await timelock.connect(wallet).setContractHandler(user1.address, true);
+
+    expect(await vault.isLeverageEnabled()).eq(false);
+    await timelock.connect(user1).setIsLeverageEnabled(vault.address, true);
     expect(await vault.isLeverageEnabled()).eq(true);
+
+    await expect(
+      timelock.connect(user1).addExcludedToken(user2.address)
+    ).to.be.revertedWith("KtxTimelock: forbidden");
   });
 
   it("setMaxGlobalShortSize", async () => {
@@ -338,7 +361,7 @@ describe("Timelock", function () {
       timelock
         .connect(user0)
         .setMaxGlobalShortSize(vault.address, bnb.address, 100)
-    ).to.be.revertedWith("Timelock: forbidden");
+    ).to.be.revertedWith("KtxTimelock: forbidden");
 
     expect(await vault.maxGlobalShortSizes(bnb.address)).eq(0);
     await timelock
@@ -350,7 +373,7 @@ describe("Timelock", function () {
   it("setMaxGasPrice", async () => {
     await expect(
       timelock.connect(user0).setMaxGasPrice(vault.address, 7000000000)
-    ).to.be.revertedWith("Timelock: forbidden");
+    ).to.be.revertedWith("KtxTimelock: forbidden");
 
     expect(await vault.maxGasPrice()).eq(0);
     await timelock.connect(wallet).setMaxGasPrice(vault.address, 7000000000);
@@ -360,11 +383,11 @@ describe("Timelock", function () {
   it("setMaxLeverage", async () => {
     await expect(
       timelock.connect(user0).setMaxLeverage(vault.address, 100 * 10000)
-    ).to.be.revertedWith("Timelock: forbidden");
+    ).to.be.revertedWith("KtxTimelock: forbidden");
 
     await expect(
       timelock.connect(wallet).setMaxLeverage(vault.address, 49 * 10000)
-    ).to.be.revertedWith("Timelock: invalid _maxLeverage");
+    ).to.be.revertedWith("KtxTimelock: invalid _maxLeverage");
 
     expect(await vault.maxLeverage()).eq(75 * 10000);
     await timelock.connect(wallet).setMaxLeverage(vault.address, 100 * 10000);
@@ -373,8 +396,10 @@ describe("Timelock", function () {
 
   it("setFundingRate", async () => {
     await expect(
-      timelock.connect(user0).setFundingRate(vault.address, 59 * 60, 100, 100)
-    ).to.be.revertedWith("Timelock: forbidden");
+      timelock
+        .connect(user0)
+        .setFundingRate(vault.address, 59 * 60, 100000, 100000)
+    ).to.be.revertedWith("KtxTimelock: forbidden");
 
     expect(await vault.fundingRateFactor()).eq(600000);
     expect(await vault.stableFundingRateFactor()).eq(600000);
@@ -387,25 +412,15 @@ describe("Timelock", function () {
     await timelock
       .connect(wallet)
       .setFundingRate(vault.address, 60 * 60, 100000, 0);
-    expect(await vault.fundingInterval()).eq(60 * 60);
     expect(await vault.fundingRateFactor()).eq(100000);
     expect(await vault.stableFundingRateFactor()).eq(0);
-
-    await timelock.setContractHandler(user0.address, true);
-
-    await timelock
-      .connect(user0)
-      .setFundingRate(vault.address, 120 * 60, 50, 75);
-    expect(await vault.fundingInterval()).eq(120 * 60);
-    expect(await vault.fundingRateFactor()).eq(50);
-    expect(await vault.stableFundingRateFactor()).eq(75);
   });
 
   it("transferIn", async () => {
     await bnb.mint(user1.address, 1000);
     await expect(
       timelock.connect(user0).transferIn(user1.address, bnb.address, 1000)
-    ).to.be.revertedWith("Timelock: forbidden");
+    ).to.be.revertedWith("KtxTimelock: forbidden");
 
     await expect(
       timelock.connect(wallet).transferIn(user1.address, bnb.address, 1000)
@@ -421,24 +436,23 @@ describe("Timelock", function () {
   });
 
   it("approve", async () => {
-    await timelock.setContractHandler(user0.address, true);
     await expect(
       timelock
         .connect(user0)
         .approve(dai.address, user1.address, expandDecimals(100, 18))
-    ).to.be.revertedWith("Timelock: forbidden");
+    ).to.be.revertedWith("KtxTimelock: forbidden");
 
     await expect(
       timelock
         .connect(wallet)
         .approve(dai.address, user1.address, expandDecimals(100, 18))
-    ).to.be.revertedWith("Timelock: action not signalled");
+    ).to.be.revertedWith("KtxTimelock: action not signalled");
 
     await expect(
       timelock
         .connect(user0)
         .signalApprove(dai.address, user1.address, expandDecimals(100, 18))
-    ).to.be.revertedWith("Timelock: forbidden");
+    ).to.be.revertedWith("KtxTimelock: forbidden");
 
     await timelock
       .connect(wallet)
@@ -448,7 +462,7 @@ describe("Timelock", function () {
       timelock
         .connect(wallet)
         .approve(dai.address, user1.address, expandDecimals(100, 18))
-    ).to.be.revertedWith("Timelock: action time not yet passed");
+    ).to.be.revertedWith("KtxTimelock: action time not yet passed");
 
     await increaseTime(provider, 4 * 24 * 60 * 60);
     await mineBlock(provider);
@@ -457,7 +471,7 @@ describe("Timelock", function () {
       timelock
         .connect(wallet)
         .approve(dai.address, user1.address, expandDecimals(100, 18))
-    ).to.be.revertedWith("Timelock: action time not yet passed");
+    ).to.be.revertedWith("KtxTimelock: action time not yet passed");
 
     await increaseTime(provider, 1 * 24 * 60 * 60 + 10);
     await mineBlock(provider);
@@ -466,19 +480,19 @@ describe("Timelock", function () {
       timelock
         .connect(wallet)
         .approve(bnb.address, user1.address, expandDecimals(100, 18))
-    ).to.be.revertedWith("Timelock: action not signalled");
+    ).to.be.revertedWith("KtxTimelock: action not signalled");
 
     await expect(
       timelock
         .connect(wallet)
         .approve(dai.address, user2.address, expandDecimals(100, 18))
-    ).to.be.revertedWith("Timelock: action not signalled");
+    ).to.be.revertedWith("KtxTimelock: action not signalled");
 
     await expect(
       timelock
         .connect(wallet)
         .approve(dai.address, user1.address, expandDecimals(101, 18))
-    ).to.be.revertedWith("Timelock: action not signalled");
+    ).to.be.revertedWith("KtxTimelock: action not signalled");
 
     await dai.mint(timelock.address, expandDecimals(150, 18));
 
@@ -516,7 +530,7 @@ describe("Timelock", function () {
       timelock
         .connect(wallet)
         .approve(dai.address, user1.address, expandDecimals(100, 18))
-    ).to.be.revertedWith("Timelock: action not signalled");
+    ).to.be.revertedWith("KtxTimelock: action not signalled");
 
     await timelock
       .connect(wallet)
@@ -526,7 +540,7 @@ describe("Timelock", function () {
       timelock
         .connect(wallet)
         .approve(dai.address, user1.address, expandDecimals(100, 18))
-    ).to.be.revertedWith("Timelock: action time not yet passed");
+    ).to.be.revertedWith("KtxTimelock: action time not yet passed");
 
     const action0 = ethers.utils.solidityKeccak256(
       ["string", "address", "address", "uint256"],
@@ -539,11 +553,11 @@ describe("Timelock", function () {
 
     await expect(
       timelock.connect(user0).cancelAction(action0)
-    ).to.be.revertedWith("Timelock: forbidden");
+    ).to.be.revertedWith("KtxTimelock: forbidden");
 
     await expect(
       timelock.connect(wallet).cancelAction(action0)
-    ).to.be.revertedWith("Timelock: invalid _action");
+    ).to.be.revertedWith("KtxTimelock: invalid _action");
 
     await timelock.connect(wallet).cancelAction(action1);
 
@@ -551,79 +565,10 @@ describe("Timelock", function () {
       timelock
         .connect(wallet)
         .approve(dai.address, user1.address, expandDecimals(100, 18))
-    ).to.be.revertedWith("Timelock: action not signalled");
+    ).to.be.revertedWith("KtxTimelock: action not signalled");
   });
 
-  // it("setPriceFeedWatcher", async () => {
-  //   await timelock.setContractHandler(user0.address, true);
-
-  //   await expect(
-  //     timelock
-  //       .connect(user0)
-  //       .setPriceFeedWatcher(fastPriceFeed.address, user1.address, true)
-  //   ).to.be.revertedWith("Timelock: forbidden");
-
-  //   await expect(
-  //     timelock
-  //       .connect(wallet)
-  //       .setPriceFeedWatcher(fastPriceFeed.address, user1.address, true)
-  //   ).to.be.revertedWith("Timelock: action not signalled");
-
-  //   await expect(
-  //     timelock
-  //       .connect(user0)
-  //       .signalSetPriceFeedWatcher(fastPriceFeed.address, user1.address, true)
-  //   ).to.be.revertedWith("Timelock: forbidden");
-
-  //   await timelock
-  //     .connect(wallet)
-  //     .signalSetPriceFeedWatcher(fastPriceFeed.address, user1.address, true);
-
-  //   await expect(
-  //     timelock
-  //       .connect(wallet)
-  //       .setPriceFeedWatcher(fastPriceFeed.address, user1.address, true)
-  //   ).to.be.revertedWith("Timelock: action time not yet passed");
-
-  //   await increaseTime(provider, 4 * 24 * 60 * 60);
-  //   await mineBlock(provider);
-
-  //   await expect(
-  //     timelock
-  //       .connect(wallet)
-  //       .setPriceFeedWatcher(fastPriceFeed.address, user1.address, true)
-  //   ).to.be.revertedWith("Timelock: action time not yet passed");
-
-  //   await increaseTime(provider, 1 * 24 * 60 * 60 + 10);
-  //   await mineBlock(provider);
-
-  //   await expect(
-  //     timelock
-  //       .connect(wallet)
-  //       .setPriceFeedWatcher(user2.address, user1.address, true)
-  //   ).to.be.revertedWith("Timelock: action not signalled");
-
-  //   await expect(
-  //     timelock
-  //       .connect(wallet)
-  //       .setPriceFeedWatcher(fastPriceFeed.address, user2.address, true)
-  //   ).to.be.revertedWith("Timelock: action not signalled");
-
-  //   await expect(
-  //     timelock
-  //       .connect(wallet)
-  //       .setPriceFeedWatcher(fastPriceFeed.address, user1.address, false)
-  //   ).to.be.revertedWith("Timelock: action not signalled");
-
-  //   expect(await fastPriceFeed.isSigner(user1.address)).eq(false);
-  //   await timelock
-  //     .connect(wallet)
-  //     .setPriceFeedWatcher(fastPriceFeed.address, user1.address, true);
-  //   expect(await fastPriceFeed.isSigner(user1.address)).eq(true);
-  // });
-
   it("processMint", async () => {
-    await timelock.setContractHandler(user0.address, true);
     const ktx = await deployContract("KTX", []);
     await ktx.setGov(timelock.address);
 
@@ -631,19 +576,19 @@ describe("Timelock", function () {
       timelock
         .connect(user0)
         .processMint(ktx.address, user1.address, expandDecimals(100, 18))
-    ).to.be.revertedWith("Timelock: forbidden");
+    ).to.be.revertedWith("KtxTimelock: forbidden");
 
     await expect(
       timelock
         .connect(wallet)
         .processMint(ktx.address, user1.address, expandDecimals(100, 18))
-    ).to.be.revertedWith("Timelock: action not signalled");
+    ).to.be.revertedWith("KtxTimelock: action not signalled");
 
     await expect(
       timelock
         .connect(user0)
         .signalMint(ktx.address, user1.address, expandDecimals(100, 18))
-    ).to.be.revertedWith("Timelock: forbidden");
+    ).to.be.revertedWith("KtxTimelock: forbidden");
 
     await timelock
       .connect(wallet)
@@ -653,7 +598,7 @@ describe("Timelock", function () {
       timelock
         .connect(wallet)
         .processMint(ktx.address, user1.address, expandDecimals(100, 18))
-    ).to.be.revertedWith("Timelock: action time not yet passed");
+    ).to.be.revertedWith("KtxTimelock: action time not yet passed");
 
     await increaseTime(provider, 4 * 24 * 60 * 60);
     await mineBlock(provider);
@@ -662,7 +607,7 @@ describe("Timelock", function () {
       timelock
         .connect(wallet)
         .processMint(ktx.address, user1.address, expandDecimals(100, 18))
-    ).to.be.revertedWith("Timelock: action time not yet passed");
+    ).to.be.revertedWith("KtxTimelock: action time not yet passed");
 
     await increaseTime(provider, 1 * 24 * 60 * 60 + 10);
     await mineBlock(provider);
@@ -671,19 +616,19 @@ describe("Timelock", function () {
       timelock
         .connect(wallet)
         .processMint(bnb.address, user1.address, expandDecimals(100, 18))
-    ).to.be.revertedWith("Timelock: action not signalled");
+    ).to.be.revertedWith("KtxTimelock: action not signalled");
 
     await expect(
       timelock
         .connect(wallet)
         .processMint(ktx.address, user2.address, expandDecimals(100, 18))
-    ).to.be.revertedWith("Timelock: action not signalled");
+    ).to.be.revertedWith("KtxTimelock: action not signalled");
 
     await expect(
       timelock
         .connect(wallet)
         .processMint(ktx.address, user1.address, expandDecimals(101, 18))
-    ).to.be.revertedWith("Timelock: action not signalled");
+    ).to.be.revertedWith("KtxTimelock: action not signalled");
 
     expect(await ktx.balanceOf(timelock.address)).eq(0);
     expect(await ktx.balanceOf(user1.address)).eq(0);
@@ -699,7 +644,7 @@ describe("Timelock", function () {
       timelock
         .connect(wallet)
         .processMint(ktx.address, user1.address, expandDecimals(100, 18))
-    ).to.be.revertedWith("Timelock: action not signalled");
+    ).to.be.revertedWith("KtxTimelock: action not signalled");
 
     await timelock
       .connect(wallet)
@@ -709,7 +654,7 @@ describe("Timelock", function () {
       timelock
         .connect(wallet)
         .processMint(ktx.address, user1.address, expandDecimals(100, 18))
-    ).to.be.revertedWith("Timelock: action time not yet passed");
+    ).to.be.revertedWith("KtxTimelock: action time not yet passed");
 
     const action0 = ethers.utils.solidityKeccak256(
       ["string", "address", "address", "uint256"],
@@ -722,11 +667,11 @@ describe("Timelock", function () {
 
     await expect(
       timelock.connect(user0).cancelAction(action0)
-    ).to.be.revertedWith("Timelock: forbidden");
+    ).to.be.revertedWith("KtxTimelock: forbidden");
 
     await expect(
       timelock.connect(wallet).cancelAction(action0)
-    ).to.be.revertedWith("Timelock: invalid _action");
+    ).to.be.revertedWith("KtxTimelock: invalid _action");
 
     await timelock.connect(wallet).cancelAction(action1);
 
@@ -734,158 +679,70 @@ describe("Timelock", function () {
       timelock
         .connect(wallet)
         .processMint(ktx.address, user1.address, expandDecimals(100, 18))
-    ).to.be.revertedWith("Timelock: action not signalled");
-  });
-
-  it("setHandler", async () => {
-    await timelock.setContractHandler(user0.address, true);
-    const vester = await deployContract("Vester", [
-      "Vested KTX",
-      "veKTX",
-      365 * 24 * 60 * 60,
-      AddressZero,
-      AddressZero,
-      AddressZero,
-      AddressZero,
-    ]);
-    await vester.setGov(timelock.address);
-
-    await expect(
-      timelock.connect(user0).setHandler(vester.address, user1.address, true)
-    ).to.be.revertedWith("Timelock: forbidden");
-
-    await expect(
-      timelock.connect(wallet).setHandler(vester.address, user1.address, true)
-    ).to.be.revertedWith("Timelock: action not signalled");
-
-    await expect(
-      timelock
-        .connect(user0)
-        .signalSetHandler(vester.address, user1.address, true)
-    ).to.be.revertedWith("Timelock: forbidden");
-
-    await timelock
-      .connect(wallet)
-      .signalSetHandler(vester.address, user1.address, true);
-
-    await expect(
-      timelock.connect(wallet).setHandler(vester.address, user1.address, true)
-    ).to.be.revertedWith("Timelock: action time not yet passed");
-
-    await increaseTime(provider, 4 * 24 * 60 * 60);
-    await mineBlock(provider);
-
-    await expect(
-      timelock.connect(wallet).setHandler(vester.address, user1.address, true)
-    ).to.be.revertedWith("Timelock: action time not yet passed");
-
-    await increaseTime(provider, 1 * 24 * 60 * 60 + 10);
-    await mineBlock(provider);
-
-    await expect(
-      timelock.connect(wallet).setHandler(bnb.address, user1.address, true)
-    ).to.be.revertedWith("Timelock: action not signalled");
-
-    await expect(
-      timelock.connect(wallet).setHandler(vester.address, user2.address, true)
-    ).to.be.revertedWith("Timelock: action not signalled");
-
-    await expect(
-      timelock.connect(wallet).setHandler(vester.address, user1.address, false)
-    ).to.be.revertedWith("Timelock: action not signalled");
-
-    expect(await vester.isHandler(user1.address)).eq(false);
-    await timelock
-      .connect(wallet)
-      .setHandler(vester.address, user1.address, true);
-    expect(await vester.isHandler(user1.address)).eq(true);
-
-    await expect(
-      timelock.connect(wallet).setHandler(vester.address, user1.address, true)
-    ).to.be.revertedWith("Timelock: action not signalled");
-
-    await timelock
-      .connect(wallet)
-      .signalSetHandler(vester.address, user1.address, true);
-
-    await expect(
-      timelock
-        .connect(wallet)
-        .setHandler(vester.address, user1.address, expandDecimals(100, 18))
-    ).to.be.revertedWith("Timelock: action time not yet passed");
-
-    const action0 = ethers.utils.solidityKeccak256(
-      ["string", "address", "address", "bool"],
-      ["setHandler", bnb.address, user1.address, true]
-    );
-    const action1 = ethers.utils.solidityKeccak256(
-      ["string", "address", "address", "bool"],
-      ["setHandler", vester.address, user1.address, true]
-    );
-
-    await expect(
-      timelock.connect(user0).cancelAction(action0)
-    ).to.be.revertedWith("Timelock: forbidden");
-
-    await expect(
-      timelock.connect(wallet).cancelAction(action0)
-    ).to.be.revertedWith("Timelock: invalid _action");
-
-    await timelock.connect(wallet).cancelAction(action1);
-
-    await expect(
-      timelock.connect(wallet).setHandler(vester.address, user1.address, true)
-    ).to.be.revertedWith("Timelock: action not signalled");
+    ).to.be.revertedWith("KtxTimelock: action not signalled");
   });
 
   it("setGov", async () => {
-    await timelock.setContractHandler(user0.address, true);
-
     await expect(
       timelock.connect(user0).setGov(vault.address, user1.address)
-    ).to.be.revertedWith("Timelock: forbidden");
+    ).to.be.revertedWith("KtxTimelock: forbidden");
 
     await expect(
       timelock.connect(wallet).setGov(vault.address, user1.address)
-    ).to.be.revertedWith("Timelock: action not signalled");
+    ).to.be.revertedWith("KtxTimelock: action not signalled");
 
     await expect(
       timelock.connect(user0).signalSetGov(vault.address, user1.address)
-    ).to.be.revertedWith("Timelock: forbidden");
+    ).to.be.revertedWith("KtxTimelock: forbidden");
 
-    await timelock.connect(wallet).signalSetGov(vault.address, user1.address);
+    await expect(
+      timelock.connect(wallet).signalSetGov(vault.address, user1.address)
+    ).to.be.revertedWith("KtxTimelock: forbidden");
+
+    await timelock
+      .connect(tokenManager)
+      .signalSetGov(vault.address, user1.address);
 
     await expect(
       timelock.connect(wallet).setGov(vault.address, user1.address)
-    ).to.be.revertedWith("Timelock: action time not yet passed");
+    ).to.be.revertedWith("KtxTimelock: action time not yet passed");
 
     await increaseTime(provider, 4 * 24 * 60 * 60);
     await mineBlock(provider);
 
     await expect(
       timelock.connect(wallet).setGov(vault.address, user1.address)
-    ).to.be.revertedWith("Timelock: action time not yet passed");
+    ).to.be.revertedWith("KtxTimelock: action time not yet passed");
 
     await increaseTime(provider, 1 * 24 * 60 * 60 + 10);
     await mineBlock(provider);
 
     await expect(
       timelock.connect(wallet).setGov(user2.address, user1.address)
-    ).to.be.revertedWith("Timelock: action not signalled");
+    ).to.be.revertedWith("KtxTimelock: action not signalled");
 
     await expect(
       timelock.connect(wallet).setGov(vault.address, user2.address)
-    ).to.be.revertedWith("Timelock: action not signalled");
+    ).to.be.revertedWith("KtxTimelock: action not signalled");
+
+    await expect(
+      timelock.connect(wallet).setGov(vault.address, user1.address)
+    ).to.be.revertedWith("KtxTimelock: action time not yet passed");
+
+    await increaseTime(provider, 2 * 24 * 60 * 60 + 10);
+    await mineBlock(provider);
 
     expect(await vault.gov()).eq(timelock.address);
     await timelock.connect(wallet).setGov(vault.address, user1.address);
     expect(await vault.gov()).eq(user1.address);
 
-    await timelock.connect(wallet).signalSetGov(vault.address, user2.address);
+    await timelock
+      .connect(tokenManager)
+      .signalSetGov(vault.address, user2.address);
 
     await expect(
       timelock.connect(wallet).setGov(vault.address, user2.address)
-    ).to.be.revertedWith("Timelock: action time not yet passed");
+    ).to.be.revertedWith("KtxTimelock: action time not yet passed");
 
     const action0 = ethers.utils.solidityKeccak256(
       ["string", "address", "address"],
@@ -898,29 +755,27 @@ describe("Timelock", function () {
 
     await expect(
       timelock.connect(wallet).cancelAction(action0)
-    ).to.be.revertedWith("Timelock: invalid _action");
+    ).to.be.revertedWith("KtxTimelock: invalid _action");
 
     await timelock.connect(wallet).cancelAction(action1);
 
     await expect(
       timelock.connect(wallet).setGov(vault.address, user2.address)
-    ).to.be.revertedWith("Timelock: action not signalled");
+    ).to.be.revertedWith("KtxTimelock: action not signalled");
   });
 
   it("setPriceFeed", async () => {
-    await timelock.setContractHandler(user0.address, true);
-
     await expect(
       timelock.connect(user0).setPriceFeed(vault.address, user1.address)
-    ).to.be.revertedWith("Timelock: forbidden");
+    ).to.be.revertedWith("KtxTimelock: forbidden");
 
     await expect(
       timelock.connect(wallet).setPriceFeed(vault.address, user1.address)
-    ).to.be.revertedWith("Timelock: action not signalled");
+    ).to.be.revertedWith("KtxTimelock: action not signalled");
 
     await expect(
       timelock.connect(user0).signalSetPriceFeed(vault.address, user1.address)
-    ).to.be.revertedWith("Timelock: forbidden");
+    ).to.be.revertedWith("KtxTimelock: forbidden");
 
     await timelock
       .connect(wallet)
@@ -928,25 +783,25 @@ describe("Timelock", function () {
 
     await expect(
       timelock.connect(wallet).setPriceFeed(vault.address, user1.address)
-    ).to.be.revertedWith("Timelock: action time not yet passed");
+    ).to.be.revertedWith("KtxTimelock: action time not yet passed");
 
     await increaseTime(provider, 4 * 24 * 60 * 60);
     await mineBlock(provider);
 
     await expect(
       timelock.connect(wallet).setPriceFeed(vault.address, user1.address)
-    ).to.be.revertedWith("Timelock: action time not yet passed");
+    ).to.be.revertedWith("KtxTimelock: action time not yet passed");
 
     await increaseTime(provider, 1 * 24 * 60 * 60 + 10);
     await mineBlock(provider);
 
     await expect(
       timelock.connect(wallet).setPriceFeed(user2.address, user1.address)
-    ).to.be.revertedWith("Timelock: action not signalled");
+    ).to.be.revertedWith("KtxTimelock: action not signalled");
 
     await expect(
       timelock.connect(wallet).setPriceFeed(vault.address, user2.address)
-    ).to.be.revertedWith("Timelock: action not signalled");
+    ).to.be.revertedWith("KtxTimelock: action not signalled");
 
     expect(await vault.priceFeed()).eq(user3.address);
     await timelock.connect(wallet).setPriceFeed(vault.address, user1.address);
@@ -958,7 +813,7 @@ describe("Timelock", function () {
 
     await expect(
       timelock.connect(wallet).setPriceFeed(vault.address, user2.address)
-    ).to.be.revertedWith("Timelock: action time not yet passed");
+    ).to.be.revertedWith("KtxTimelock: action time not yet passed");
 
     const action0 = ethers.utils.solidityKeccak256(
       ["string", "address", "address"],
@@ -971,18 +826,16 @@ describe("Timelock", function () {
 
     await expect(
       timelock.connect(wallet).cancelAction(action0)
-    ).to.be.revertedWith("Timelock: invalid _action");
+    ).to.be.revertedWith("KtxTimelock: invalid _action");
 
     await timelock.connect(wallet).cancelAction(action1);
 
     await expect(
       timelock.connect(wallet).setPriceFeed(vault.address, user2.address)
-    ).to.be.revertedWith("Timelock: action not signalled");
+    ).to.be.revertedWith("KtxTimelock: action not signalled");
   });
 
   it("withdrawToken", async () => {
-    await timelock.setContractHandler(user0.address, true);
-
     const ktx = await deployContract("KTX", []);
     await ktx.setGov(timelock.address);
 
@@ -990,19 +843,19 @@ describe("Timelock", function () {
       timelock
         .connect(user0)
         .withdrawToken(ktx.address, bnb.address, user0.address, 100)
-    ).to.be.revertedWith("Timelock: forbidden");
+    ).to.be.revertedWith("KtxTimelock: forbidden");
 
     await expect(
       timelock
         .connect(wallet)
         .withdrawToken(ktx.address, bnb.address, user0.address, 100)
-    ).to.be.revertedWith("Timelock: action not signalled");
+    ).to.be.revertedWith("KtxTimelock: action not signalled");
 
     await expect(
       timelock
         .connect(user0)
         .signalWithdrawToken(ktx.address, bnb.address, user0.address, 100)
-    ).to.be.revertedWith("Timelock: forbidden");
+    ).to.be.revertedWith("KtxTimelock: forbidden");
 
     await timelock
       .connect(wallet)
@@ -1012,7 +865,7 @@ describe("Timelock", function () {
       timelock
         .connect(wallet)
         .withdrawToken(ktx.address, bnb.address, user0.address, 100)
-    ).to.be.revertedWith("Timelock: action time not yet passed");
+    ).to.be.revertedWith("KtxTimelock: action time not yet passed");
 
     await increaseTime(provider, 4 * 24 * 60 * 60);
     await mineBlock(provider);
@@ -1021,7 +874,7 @@ describe("Timelock", function () {
       timelock
         .connect(wallet)
         .withdrawToken(ktx.address, bnb.address, user0.address, 100)
-    ).to.be.revertedWith("Timelock: action time not yet passed");
+    ).to.be.revertedWith("KtxTimelock: action time not yet passed");
 
     await increaseTime(provider, 1 * 24 * 60 * 60 + 10);
     await mineBlock(provider);
@@ -1030,25 +883,25 @@ describe("Timelock", function () {
       timelock
         .connect(wallet)
         .withdrawToken(dai.address, bnb.address, user0.address, 100)
-    ).to.be.revertedWith("Timelock: action not signalled");
+    ).to.be.revertedWith("KtxTimelock: action not signalled");
 
     await expect(
       timelock
         .connect(wallet)
         .withdrawToken(ktx.address, dai.address, user0.address, 100)
-    ).to.be.revertedWith("Timelock: action not signalled");
+    ).to.be.revertedWith("KtxTimelock: action not signalled");
 
     await expect(
       timelock
         .connect(wallet)
         .withdrawToken(ktx.address, bnb.address, user1.address, 100)
-    ).to.be.revertedWith("Timelock: action not signalled");
+    ).to.be.revertedWith("KtxTimelock: action not signalled");
 
     await expect(
       timelock
         .connect(wallet)
         .withdrawToken(ktx.address, bnb.address, user0.address, 101)
-    ).to.be.revertedWith("Timelock: action not signalled");
+    ).to.be.revertedWith("KtxTimelock: action not signalled");
 
     await expect(
       timelock
@@ -1065,8 +918,6 @@ describe("Timelock", function () {
   });
 
   it("vaultSetTokenConfig", async () => {
-    await timelock.setContractHandler(user0.address, true);
-
     await timelock
       .connect(wallet)
       .signalSetPriceFeed(vault.address, vaultPriceFeed.address);
@@ -1089,7 +940,7 @@ describe("Timelock", function () {
         true, // _isStable
         false // isShortable
       )
-    ).to.be.revertedWith("Timelock: forbidden");
+    ).to.be.revertedWith("KtxTimelock: forbidden");
 
     await expect(
       timelock.connect(wallet).vaultSetTokenConfig(
@@ -1102,7 +953,7 @@ describe("Timelock", function () {
         true, // _isStable
         false // isShortable
       )
-    ).to.be.revertedWith("Timelock: action not signalled");
+    ).to.be.revertedWith("KtxTimelock: action not signalled");
 
     await expect(
       timelock.connect(user0).signalVaultSetTokenConfig(
@@ -1115,7 +966,7 @@ describe("Timelock", function () {
         true, // _isStable
         false // isShortable
       )
-    ).to.be.revertedWith("Timelock: forbidden");
+    ).to.be.revertedWith("KtxTimelock: forbidden");
 
     await timelock.connect(wallet).signalVaultSetTokenConfig(
       vault.address,
@@ -1139,7 +990,7 @@ describe("Timelock", function () {
         true, // _isStable
         false // isShortable
       )
-    ).to.be.revertedWith("Timelock: action time not yet passed");
+    ).to.be.revertedWith("KtxTimelock: action time not yet passed");
 
     await increaseTime(provider, 4 * 24 * 60 * 60);
     await mineBlock(provider);
@@ -1155,7 +1006,7 @@ describe("Timelock", function () {
         true, // _isStable
         false // isShortable
       )
-    ).to.be.revertedWith("Timelock: action time not yet passed");
+    ).to.be.revertedWith("KtxTimelock: action time not yet passed");
 
     await increaseTime(provider, 1 * 24 * 60 * 60 + 10);
     await mineBlock(provider);
@@ -1171,7 +1022,7 @@ describe("Timelock", function () {
         true, // _isStable
         false // isShortable
       )
-    ).to.be.revertedWith("Timelock: action not signalled");
+    ).to.be.revertedWith("KtxTimelock: action not signalled");
 
     expect(await vault.totalTokenWeights()).eq(0);
     expect(await vault.whitelistedTokens(dai.address)).eq(false);
@@ -1203,158 +1054,238 @@ describe("Timelock", function () {
     expect(await vault.shortableTokens(dai.address)).eq(false);
   });
 
-  // it("priceFeedSetTokenConfig", async () => {
-  //   await timelock.setContractHandler(user0.address, true);
+  it("priceFeedSetTokenConfig", async () => {
+    await timelock
+      .connect(wallet)
+      .signalSetPriceFeed(vault.address, vaultPriceFeed.address);
+    await increaseTime(provider, 5 * 24 * 60 * 60 + 10);
+    await mineBlock(provider);
+    await timelock
+      .connect(wallet)
+      .setPriceFeed(vault.address, vaultPriceFeed.address);
 
-  //   await timelock
-  //     .connect(wallet)
-  //     .signalSetPriceFeed(vault.address, vaultPriceFeed.address);
-  //   await increaseTime(provider, 5 * 24 * 60 * 60 + 10);
-  //   await mineBlock(provider);
-  //   await timelock
-  //     .connect(wallet)
-  //     .setPriceFeed(vault.address, vaultPriceFeed.address);
+    await btcPriceFeed.setLatestAnswer(toChainlinkPrice(70000));
 
-  //   await btcPriceFeed.setLatestAnswer(toChainlinkPrice(70000));
+    await expect(
+      timelock.connect(user0).priceFeedSetTokenConfig(
+        vaultPriceFeed.address,
+        btc.address, // _token
+        btcPriceFeed.address, // _priceFeed
+        8, // _priceDecimals
+        true // _isStrictStable
+      )
+    ).to.be.revertedWith("KtxTimelock: forbidden");
 
-  //   await expect(
-  //     timelock.connect(user0).priceFeedSetTokenConfig(
-  //       vaultPriceFeed.address,
-  //       btc.address, // _token
-  //       btcPriceFeed.address, // _priceFeed
-  //       8, // _priceDecimals
-  //       true // _isStrictStable
-  //     )
-  //   ).to.be.revertedWith("Timelock: forbidden");
+    await expect(
+      timelock.connect(wallet).priceFeedSetTokenConfig(
+        vaultPriceFeed.address,
+        btc.address, // _token
+        btcPriceFeed.address, // _priceFeed
+        8, // _priceDecimals
+        true // _isStrictStable
+      )
+    ).to.be.revertedWith("KtxTimelock: action not signalled");
 
-  //   await expect(
-  //     timelock.connect(wallet).priceFeedSetTokenConfig(
-  //       vaultPriceFeed.address,
-  //       btc.address, // _token
-  //       btcPriceFeed.address, // _priceFeed
-  //       8, // _priceDecimals
-  //       true // _isStrictStable
-  //     )
-  //   ).to.be.revertedWith("Timelock: action not signalled");
+    await expect(
+      timelock.connect(user0).signalPriceFeedSetTokenConfig(
+        vaultPriceFeed.address,
+        btc.address, // _token
+        btcPriceFeed.address, // _priceFeed
+        8, // _priceDecimals
+        true // _isStrictStable
+      )
+    ).to.be.revertedWith("KtxTimelock: forbidden");
 
-  //   await expect(
-  //     timelock.connect(user0).signalPriceFeedSetTokenConfig(
-  //       vaultPriceFeed.address,
-  //       btc.address, // _token
-  //       btcPriceFeed.address, // _priceFeed
-  //       8, // _priceDecimals
-  //       true // _isStrictStable
-  //     )
-  //   ).to.be.revertedWith("Timelock: forbidden");
+    await timelock.connect(wallet).signalPriceFeedSetTokenConfig(
+      vaultPriceFeed.address,
+      btc.address, // _token
+      btcPriceFeed.address, // _priceFeed
+      8, // _priceDecimals
+      true // _isStrictStable
+    );
 
-  //   await timelock.connect(wallet).signalPriceFeedSetTokenConfig(
-  //     vaultPriceFeed.address,
-  //     btc.address, // _token
-  //     btcPriceFeed.address, // _priceFeed
-  //     8, // _priceDecimals
-  //     true // _isStrictStable
-  //   );
+    await expect(
+      timelock.connect(wallet).priceFeedSetTokenConfig(
+        vaultPriceFeed.address,
+        btc.address, // _token
+        btcPriceFeed.address, // _priceFeed
+        8, // _priceDecimals
+        true // _isStrictStable
+      )
+    ).to.be.revertedWith("KtxTimelock: action time not yet passed");
 
-  //   await expect(
-  //     timelock.connect(wallet).priceFeedSetTokenConfig(
-  //       vaultPriceFeed.address,
-  //       btc.address, // _token
-  //       btcPriceFeed.address, // _priceFeed
-  //       8, // _priceDecimals
-  //       true // _isStrictStable
-  //     )
-  //   ).to.be.revertedWith("Timelock: action time not yet passed");
+    await increaseTime(provider, 4 * 24 * 60 * 60);
+    await mineBlock(provider);
 
-  //   await increaseTime(provider, 4 * 24 * 60 * 60);
-  //   await mineBlock(provider);
+    await expect(
+      timelock.connect(wallet).priceFeedSetTokenConfig(
+        vaultPriceFeed.address,
+        btc.address, // _token
+        btcPriceFeed.address, // _priceFeed
+        8, // _priceDecimals
+        true // _isStrictStable
+      )
+    ).to.be.revertedWith("KtxTimelock: action time not yet passed");
 
-  //   await expect(
-  //     timelock.connect(wallet).priceFeedSetTokenConfig(
-  //       vaultPriceFeed.address,
-  //       btc.address, // _token
-  //       btcPriceFeed.address, // _priceFeed
-  //       8, // _priceDecimals
-  //       true // _isStrictStable
-  //     )
-  //   ).to.be.revertedWith("Timelock: action time not yet passed");
+    await increaseTime(provider, 1 * 24 * 60 * 60 + 10);
+    await mineBlock(provider);
 
-  //   await increaseTime(provider, 1 * 24 * 60 * 60 + 10);
-  //   await mineBlock(provider);
+    await expect(
+      timelock.connect(wallet).priceFeedSetTokenConfig(
+        user0.address,
+        btc.address, // _token
+        btcPriceFeed.address, // _priceFeed
+        8, // _priceDecimals
+        true // _isStrictStable
+      )
+    ).to.be.revertedWith("KtxTimelock: action not signalled");
 
-  //   await expect(
-  //     timelock.connect(wallet).priceFeedSetTokenConfig(
-  //       user0.address,
-  //       btc.address, // _token
-  //       btcPriceFeed.address, // _priceFeed
-  //       8, // _priceDecimals
-  //       true // _isStrictStable
-  //     )
-  //   ).to.be.revertedWith("Timelock: action not signalled");
+    await expect(
+      timelock.connect(wallet).priceFeedSetTokenConfig(
+        vaultPriceFeed.address,
+        bnb.address, // _token
+        btcPriceFeed.address, // _priceFeed
+        8, // _priceDecimals
+        true // _isStrictStable
+      )
+    ).to.be.revertedWith("KtxTimelock: action not signalled");
 
-  //   await expect(
-  //     timelock.connect(wallet).priceFeedSetTokenConfig(
-  //       vaultPriceFeed.address,
-  //       bnb.address, // _token
-  //       btcPriceFeed.address, // _priceFeed
-  //       8, // _priceDecimals
-  //       true // _isStrictStable
-  //     )
-  //   ).to.be.revertedWith("Timelock: action not signalled");
+    await expect(
+      timelock.connect(wallet).priceFeedSetTokenConfig(
+        vaultPriceFeed.address,
+        btc.address, // _token
+        bnbPriceFeed.address, // _priceFeed
+        8, // _priceDecimals
+        true // _isStrictStable
+      )
+    ).to.be.revertedWith("KtxTimelock: action not signalled");
 
-  //   await expect(
-  //     timelock.connect(wallet).priceFeedSetTokenConfig(
-  //       vaultPriceFeed.address,
-  //       btc.address, // _token
-  //       bnbPriceFeed.address, // _priceFeed
-  //       8, // _priceDecimals
-  //       true // _isStrictStable
-  //     )
-  //   ).to.be.revertedWith("Timelock: action not signalled");
+    await expect(
+      timelock.connect(wallet).priceFeedSetTokenConfig(
+        vaultPriceFeed.address,
+        btc.address, // _token
+        btcPriceFeed.address, // _priceFeed
+        9, // _priceDecimals
+        true // _isStrictStable
+      )
+    ).to.be.revertedWith("KtxTimelock: action not signalled");
 
-  //   await expect(
-  //     timelock.connect(wallet).priceFeedSetTokenConfig(
-  //       vaultPriceFeed.address,
-  //       btc.address, // _token
-  //       btcPriceFeed.address, // _priceFeed
-  //       9, // _priceDecimals
-  //       true // _isStrictStable
-  //     )
-  //   ).to.be.revertedWith("Timelock: action not signalled");
+    await expect(
+      timelock.connect(wallet).priceFeedSetTokenConfig(
+        vaultPriceFeed.address,
+        btc.address, // _token
+        btcPriceFeed.address, // _priceFeed
+        8, // _priceDecimals
+        false // _isStrictStable
+      )
+    ).to.be.revertedWith("KtxTimelock: action not signalled");
 
-  //   await expect(
-  //     timelock.connect(wallet).priceFeedSetTokenConfig(
-  //       vaultPriceFeed.address,
-  //       btc.address, // _token
-  //       btcPriceFeed.address, // _priceFeed
-  //       8, // _priceDecimals
-  //       false // _isStrictStable
-  //     )
-  //   ).to.be.revertedWith("Timelock: action not signalled");
+    expect(await vaultPriceFeed.priceFeeds(btc.address)).eq(AddressZero);
+    expect(await vaultPriceFeed.priceDecimals(btc.address)).eq(0);
+    expect(await vaultPriceFeed.strictStableTokens(btc.address)).eq(false);
+    await expect(
+      vaultPriceFeed.getPrice(btc.address, true, false, false)
+    ).to.be.revertedWith("VaultPriceFeed: invalid price feed");
 
-  //   expect(await vaultPriceFeed.priceFeeds(btc.address)).eq(AddressZero);
-  //   expect(await vaultPriceFeed.priceDecimals(btc.address)).eq(0);
-  //   expect(await vaultPriceFeed.strictStableTokens(btc.address)).eq(false);
-  //   await expect(
-  //     vaultPriceFeed.getPrice(btc.address, true, false, false)
-  //   ).to.be.revertedWith("VaultPriceFeed: invalid price feed");
+    await timelock.connect(wallet).priceFeedSetTokenConfig(
+      vaultPriceFeed.address,
+      btc.address, // _token
+      btcPriceFeed.address, // _priceFeed
+      8, // _priceDecimals
+      true // _isStrictStable
+    );
 
-  //   await timelock.connect(wallet).priceFeedSetTokenConfig(
-  //     vaultPriceFeed.address,
-  //     btc.address, // _token
-  //     btcPriceFeed.address, // _priceFeed
-  //     8, // _priceDecimals
-  //     true // _isStrictStable
-  //   );
+    expect(await vaultPriceFeed.priceFeeds(btc.address)).eq(
+      btcPriceFeed.address
+    );
+    expect(await vaultPriceFeed.priceDecimals(btc.address)).eq(8);
+    expect(await vaultPriceFeed.strictStableTokens(btc.address)).eq(true);
+    expect(await vaultPriceFeed.getPrice(btc.address, true, false, false)).eq(
+      toNormalizedPrice(70000)
+    );
+  });
 
-  //   expect(await vaultPriceFeed.priceFeeds(btc.address)).eq(
-  //     btcPriceFeed.address
-  //   );
-  //   expect(await vaultPriceFeed.priceDecimals(btc.address)).eq(8);
-  //   expect(await vaultPriceFeed.strictStableTokens(btc.address)).eq(true);
-  //   expect(await vaultPriceFeed.getPrice(btc.address, true, false, false)).eq(
-  //     toNormalizedPrice(70000)
-  //   );
-  // });
+  it("addPlugin", async () => {
+    await expect(
+      timelock.connect(user0).addPlugin(router.address, user1.address)
+    ).to.be.revertedWith("KtxTimelock: forbidden");
+
+    await expect(
+      timelock.connect(wallet).addPlugin(router.address, user1.address)
+    ).to.be.revertedWith("KtxTimelock: action not signalled");
+
+    await expect(
+      timelock.connect(user0).signalAddPlugin(router.address, user1.address)
+    ).to.be.revertedWith("KtxTimelock: forbidden");
+
+    await timelock
+      .connect(wallet)
+      .signalAddPlugin(router.address, user1.address);
+
+    await expect(
+      timelock.connect(wallet).addPlugin(router.address, user1.address)
+    ).to.be.revertedWith("KtxTimelock: action time not yet passed");
+
+    await increaseTime(provider, 4 * 24 * 60 * 60);
+    await mineBlock(provider);
+
+    await expect(
+      timelock.connect(wallet).addPlugin(router.address, user1.address)
+    ).to.be.revertedWith("KtxTimelock: action time not yet passed");
+
+    await increaseTime(provider, 1 * 24 * 60 * 60 + 10);
+    await mineBlock(provider);
+
+    await expect(
+      timelock.connect(wallet).addPlugin(user2.address, user1.address)
+    ).to.be.revertedWith("KtxTimelock: action not signalled");
+
+    await expect(
+      timelock.connect(wallet).addPlugin(router.address, user2.address)
+    ).to.be.revertedWith("KtxTimelock: action not signalled");
+
+    expect(await router.plugins(user1.address)).eq(false);
+    await timelock.connect(wallet).addPlugin(router.address, user1.address);
+    expect(await router.plugins(user1.address)).eq(true);
+
+    await timelock
+      .connect(wallet)
+      .signalAddPlugin(router.address, user2.address);
+
+    await expect(
+      timelock.connect(wallet).addPlugin(router.address, user2.address)
+    ).to.be.revertedWith("KtxTimelock: action time not yet passed");
+
+    const action0 = ethers.utils.solidityKeccak256(
+      ["string", "address", "address"],
+      ["addPlugin", user1.address, user2.address]
+    );
+    const action1 = ethers.utils.solidityKeccak256(
+      ["string", "address", "address"],
+      ["addPlugin", router.address, user2.address]
+    );
+
+    await expect(
+      timelock.connect(wallet).cancelAction(action0)
+    ).to.be.revertedWith("KtxTimelock: invalid _action");
+
+    await timelock.connect(wallet).cancelAction(action1);
+
+    await expect(
+      timelock.connect(wallet).addPlugin(router.address, user2.address)
+    ).to.be.revertedWith("KtxTimelock: action not signalled");
+  });
+
+  it("addExcludedToken", async () => {
+    const ktx = await deployContract("KTX", []);
+    await expect(
+      timelock.connect(user0).addExcludedToken(ktx.address)
+    ).to.be.revertedWith("KtxTimelock: forbidden");
+
+    expect(await timelock.excludedTokens(ktx.address)).eq(false);
+    await timelock.connect(wallet).addExcludedToken(ktx.address);
+    expect(await timelock.excludedTokens(ktx.address)).eq(true);
+  });
 
   it("setInPrivateTransferMode", async () => {
     const ktx = await deployContract("KTX", []);
@@ -1362,7 +1293,7 @@ describe("Timelock", function () {
     await ktx.mint(user0.address, 100);
     await expect(
       timelock.connect(user0).setInPrivateTransferMode(ktx.address, true)
-    ).to.be.revertedWith("Timelock: forbidden");
+    ).to.be.revertedWith("KtxTimelock: forbidden");
 
     await expect(
       timelock.connect(wallet).setInPrivateTransferMode(ktx.address, true)
@@ -1384,88 +1315,20 @@ describe("Timelock", function () {
       ktx.connect(user0).transfer(user1.address, 100)
     ).to.be.revertedWith("BaseToken: msg.sender not whitelisted");
 
+    await timelock.addExcludedToken(ktx.address);
+    await expect(
+      timelock.connect(wallet).setInPrivateTransferMode(ktx.address, true)
+    ).to.be.revertedWith("KtxTimelock: invalid _inPrivateTransferMode");
+
     await timelock.connect(wallet).setInPrivateTransferMode(ktx.address, false);
     expect(await ktx.inPrivateTransferMode()).eq(false);
 
     await ktx.connect(user0).transfer(user1.address, 100);
   });
 
-  it("batchSetBonusRewards", async () => {
-    const vester = await deployContract("Vester", [
-      "Vested KTX",
-      "veKTX",
-      365 * 24 * 60 * 60,
-      AddressZero,
-      AddressZero,
-      AddressZero,
-      AddressZero,
-    ]);
-    await vester.setGov(timelock.address);
-
-    const accounts = [user1.address, user2.address, user3.address];
-    const amounts = [700, 500, 900];
-
-    await expect(
-      timelock
-        .connect(user0)
-        .batchSetBonusRewards(vester.address, accounts, amounts)
-    ).to.be.revertedWith("Timelock: forbidden");
-
-    expect(await vester.bonusRewards(user1.address)).eq(0);
-    expect(await vester.bonusRewards(user2.address)).eq(0);
-    expect(await vester.bonusRewards(user3.address)).eq(0);
-    await timelock
-      .connect(wallet)
-      .batchSetBonusRewards(vester.address, accounts, amounts);
-    expect(await vester.bonusRewards(user1.address)).eq(700);
-    expect(await vester.bonusRewards(user2.address)).eq(500);
-    expect(await vester.bonusRewards(user3.address)).eq(900);
-  });
-
-  // it("managedSetMinter", async () => {
-  //   const ktx = await deployContract("KTX", []);
-  //   await ktx.setGov(timelock.address);
-  //   await expect(
-  //     timelock
-  //       .connect(wallet)
-  //       .managedSetMinter(ktx.address, user1.address, true)
-  //   ).to.be.revertedWith("Timelock: forbidden");
-
-  //   expect(await ktx.isMinter(user1.address)).eq(false);
-  //   await timelock
-  //     .connect(rewardManager)
-  //     .managedSetMinter(ktx.address, user1.address, true);
-  //   expect(await ktx.isMinter(user1.address)).eq(true);
-  // });
-
-  // it("managedSetHandler", async () => {
-  //   const vester = await deployContract("Vester", [
-  //     "Vested KTX",
-  //     "veKTX",
-  //     365 * 24 * 60 * 60,
-  //     AddressZero,
-  //     AddressZero,
-  //     AddressZero,
-  //     AddressZero,
-  //   ]);
-  //   await vester.setGov(timelock.address);
-
-  //   await expect(
-  //     timelock
-  //       .connect(wallet)
-  //       .managedSetHandler(vester.address, user1.address, true)
-  //   ).to.be.revertedWith("Timelock: forbidden");
-
-  //   expect(await vester.isHandler(user1.address)).eq(false);
-  //   await timelock
-  //     .connect(rewardManager)
-  //     .managedSetHandler(vester.address, user1.address, true);
-  //   expect(await vester.isHandler(user1.address)).eq(true);
-  // });
-
   it("setAdmin", async () => {
     await expect(timelock.setAdmin(user1.address)).to.be.revertedWith(
-      "Timelock: forbidden"
+      "KtxTimelock: forbidden"
     );
 
     expect(await timelock.admin()).eq(wallet.address);
@@ -1483,7 +1346,7 @@ describe("Timelock", function () {
       timelock
         .connect(user0)
         .setExternalAdmin(distributor.address, user3.address)
-    ).to.be.revertedWith("Timelock: forbidden");
+    ).to.be.revertedWith("KtxTimelock: forbidden");
 
     expect(await distributor.admin()).eq(wallet.address);
     await timelock
@@ -1493,227 +1356,13 @@ describe("Timelock", function () {
 
     await expect(
       timelock.connect(wallet).setExternalAdmin(timelock.address, user3.address)
-    ).to.be.revertedWith("Timelock: invalid _target");
-  });
-
-  it("setShouldToggleIsLeverageEnabled", async () => {
-    await expect(
-      timelock.connect(user0).setShouldToggleIsLeverageEnabled(true)
-    ).to.be.revertedWith("Timelock: forbidden");
-
-    expect(await timelock.shouldToggleIsLeverageEnabled()).to.be.false;
-    await expect(timelock.setShouldToggleIsLeverageEnabled(true));
-    expect(await timelock.shouldToggleIsLeverageEnabled()).to.be.true;
-    await expect(timelock.setShouldToggleIsLeverageEnabled(false));
-    expect(await timelock.shouldToggleIsLeverageEnabled()).to.be.false;
-
-    await timelock.setContractHandler(user0.address, true);
-    await timelock.connect(user0).setShouldToggleIsLeverageEnabled(true);
-    expect(await timelock.shouldToggleIsLeverageEnabled()).to.be.true;
-  });
-
-  it("setMarginFeeBasisPoints", async () => {
-    await expect(
-      timelock.connect(user0).setMarginFeeBasisPoints(100, 1000)
-    ).to.be.revertedWith("Timelock: forbidden");
-
-    expect(await timelock.marginFeeBasisPoints()).eq(50);
-    expect(await timelock.maxMarginFeeBasisPoints()).eq(500);
-
-    await timelock.setMarginFeeBasisPoints(100, 1000);
-    expect(await timelock.marginFeeBasisPoints()).eq(100);
-    expect(await timelock.maxMarginFeeBasisPoints()).eq(1000);
-
-    await timelock.setContractHandler(user0.address, true);
-    await timelock.connect(user0).setMarginFeeBasisPoints(20, 200);
-    expect(await timelock.marginFeeBasisPoints()).eq(20);
-    expect(await timelock.maxMarginFeeBasisPoints()).eq(200);
-  });
-
-  it("setFees", async () => {
-    await expect(
-      timelock.connect(user0).setFees(
-        vault.address,
-        1, // _taxBasisPoints,
-        2, // _stableTaxBasisPoints,
-        3, // _mintBurnFeeBasisPoints,
-        4, // _swapFeeBasisPoints,
-        5, // _stableSwapFeeBasisPoints,
-        6, // _marginFeeBasisPoints,
-        7, // _liquidationFeeUsd,
-        8, // _minProfitTime,
-        false
-      )
-    ).to.be.revertedWith("Timelock: forbidden");
-
-    expect(await vault.taxBasisPoints()).eq(50);
-    expect(await vault.stableTaxBasisPoints()).eq(20);
-    expect(await vault.mintBurnFeeBasisPoints()).eq(30);
-    expect(await vault.swapFeeBasisPoints()).eq(30);
-    expect(await vault.stableSwapFeeBasisPoints()).eq(4);
-    expect(await timelock.marginFeeBasisPoints()).eq(50);
-    expect(await vault.marginFeeBasisPoints()).eq(10);
-    expect(await vault.liquidationFeeUsd()).eq(toUsd(5));
-    expect(await vault.minProfitTime()).eq(0);
-    expect(await vault.hasDynamicFees()).eq(false);
-
-    await timelock.connect(wallet).setFees(
-      vault.address,
-      1, // _taxBasisPoints,
-      2, // _stableTaxBasisPoints,
-      3, // _mintBurnFeeBasisPoints,
-      4, // _swapFeeBasisPoints,
-      5, // _stableSwapFeeBasisPoints,
-      6, // _marginFeeBasisPoints,
-      7, // _liquidationFeeUsd,
-      8, // _minProfitTime,
-      false // _hasDynamicFees
-    );
-
-    expect(await vault.taxBasisPoints()).eq(1);
-    expect(await vault.stableTaxBasisPoints()).eq(2);
-    expect(await vault.mintBurnFeeBasisPoints()).eq(3);
-    expect(await vault.swapFeeBasisPoints()).eq(4);
-    expect(await vault.stableSwapFeeBasisPoints()).eq(5);
-    expect(await timelock.marginFeeBasisPoints()).eq(6);
-    expect(await vault.marginFeeBasisPoints()).eq(500);
-    expect(await vault.liquidationFeeUsd()).eq(7);
-    expect(await vault.minProfitTime()).eq(8);
-    expect(await vault.hasDynamicFees()).eq(false);
-
-    await timelock.setContractHandler(user0.address, true);
-
-    await timelock.connect(wallet).setFees(
-      vault.address,
-      11, // _taxBasisPoints,
-      12, // _stableTaxBasisPoints,
-      13, // _mintBurnFeeBasisPoints,
-      14, // _swapFeeBasisPoints,
-      15, // _stableSwapFeeBasisPoints,
-      16, // _marginFeeBasisPoints,
-      17, // _liquidationFeeUsd,
-      18, // _minProfitTime,
-      true // _hasDynamicFees
-    );
-
-    expect(await vault.taxBasisPoints()).eq(11);
-    expect(await vault.stableTaxBasisPoints()).eq(12);
-    expect(await vault.mintBurnFeeBasisPoints()).eq(13);
-    expect(await vault.swapFeeBasisPoints()).eq(14);
-    expect(await vault.stableSwapFeeBasisPoints()).eq(15);
-    expect(await timelock.marginFeeBasisPoints()).eq(16);
-    expect(await vault.marginFeeBasisPoints()).eq(500);
-    expect(await vault.liquidationFeeUsd()).eq(17);
-    expect(await vault.minProfitTime()).eq(18);
-    expect(await vault.hasDynamicFees()).eq(true);
-  });
-
-  it("setSwapFees", async () => {
-    await expect(
-      timelock.connect(user0).setSwapFees(
-        vault.address,
-        1, // _taxBasisPoints,
-        2, // _stableTaxBasisPoints,
-        3, // _mintBurnFeeBasisPoints,
-        4, // _swapFeeBasisPoints,
-        5 // _stableSwapFeeBasisPoints
-      )
-    ).to.be.revertedWith("Timelock: forbidden");
-
-    expect(await vault.taxBasisPoints()).eq(50);
-    expect(await vault.stableTaxBasisPoints()).eq(20);
-    expect(await vault.mintBurnFeeBasisPoints()).eq(30);
-    expect(await vault.swapFeeBasisPoints()).eq(30);
-    expect(await vault.stableSwapFeeBasisPoints()).eq(4);
-    expect(await timelock.marginFeeBasisPoints()).eq(50);
-    expect(await vault.marginFeeBasisPoints()).eq(10);
-    expect(await vault.liquidationFeeUsd()).eq(toUsd(5));
-    expect(await vault.minProfitTime()).eq(0);
-    expect(await vault.hasDynamicFees()).eq(false);
-
-    await timelock.connect(wallet).setSwapFees(
-      vault.address,
-      1, // _taxBasisPoints,
-      2, // _stableTaxBasisPoints,
-      3, // _mintBurnFeeBasisPoints,
-      4, // _swapFeeBasisPoints,
-      5 // _stableSwapFeeBasisPoints
-    );
-
-    expect(await vault.taxBasisPoints()).eq(1);
-    expect(await vault.stableTaxBasisPoints()).eq(2);
-    expect(await vault.mintBurnFeeBasisPoints()).eq(3);
-    expect(await vault.swapFeeBasisPoints()).eq(4);
-    expect(await vault.stableSwapFeeBasisPoints()).eq(5);
-    expect(await timelock.marginFeeBasisPoints()).eq(50);
-    expect(await vault.marginFeeBasisPoints()).eq(500);
-    expect(await vault.liquidationFeeUsd()).eq(toUsd(5));
-    expect(await vault.minProfitTime()).eq(0);
-    expect(await vault.hasDynamicFees()).eq(false);
-
-    await timelock.setContractHandler(user0.address, true);
-
-    await timelock.connect(wallet).setSwapFees(
-      vault.address,
-      11, // _taxBasisPoints,
-      12, // _stableTaxBasisPoints,
-      13, // _mintBurnFeeBasisPoints,
-      14, // _swapFeeBasisPoints,
-      15 // _stableSwapFeeBasisPoints
-    );
-
-    expect(await vault.taxBasisPoints()).eq(11);
-    expect(await vault.stableTaxBasisPoints()).eq(12);
-    expect(await vault.mintBurnFeeBasisPoints()).eq(13);
-    expect(await vault.swapFeeBasisPoints()).eq(14);
-    expect(await vault.stableSwapFeeBasisPoints()).eq(15);
-    expect(await timelock.marginFeeBasisPoints()).eq(50);
-    expect(await vault.marginFeeBasisPoints()).eq(500);
-    expect(await vault.liquidationFeeUsd()).eq(toUsd(5));
-    expect(await vault.minProfitTime()).eq(0);
-    expect(await vault.hasDynamicFees()).eq(false);
-  });
-
-  it("toggle leverage", async () => {
-    await expect(
-      timelock.connect(user0).enableLeverage(vault.address)
-    ).to.be.revertedWith("Timelock: forbidden");
-
-    await timelock.setMarginFeeBasisPoints(10, 100);
-    await expect(timelock.setShouldToggleIsLeverageEnabled(true));
-    const initialTaxBasisPoints = await vault.taxBasisPoints();
-
-    expect(await vault.isLeverageEnabled()).to.be.true;
-
-    await timelock.disableLeverage(vault.address);
-    expect(await vault.taxBasisPoints()).to.be.equal(initialTaxBasisPoints);
-    expect(await vault.marginFeeBasisPoints()).eq(100);
-    expect(await vault.isLeverageEnabled()).to.be.false;
-
-    await timelock.enableLeverage(vault.address);
-    expect(await vault.taxBasisPoints()).to.be.equal(initialTaxBasisPoints);
-    expect(await vault.marginFeeBasisPoints()).eq(10);
-    expect(await vault.isLeverageEnabled()).to.be.true;
-
-    await expect(timelock.setShouldToggleIsLeverageEnabled(false));
-    await timelock.disableLeverage(vault.address);
-    expect(await vault.taxBasisPoints()).to.be.equal(initialTaxBasisPoints);
-    expect(await vault.marginFeeBasisPoints()).eq(100);
-    expect(await vault.isLeverageEnabled()).to.be.true;
-
-    await expect(timelock.setShouldToggleIsLeverageEnabled(true));
-    await timelock.disableLeverage(vault.address);
-    await expect(timelock.setShouldToggleIsLeverageEnabled(false));
-    await timelock.enableLeverage(vault.address);
-    expect(await vault.taxBasisPoints()).to.be.equal(initialTaxBasisPoints);
-    expect(await vault.marginFeeBasisPoints()).eq(10);
-    expect(await vault.isLeverageEnabled()).to.be.false;
+    ).to.be.revertedWith("KtxTimelock: invalid _target");
   });
 
   it("setInPrivateLiquidationMode", async () => {
     await expect(
       timelock.connect(user0).setInPrivateLiquidationMode(vault.address, true)
-    ).to.be.revertedWith("Timelock: forbidden");
+    ).to.be.revertedWith("KtxTimelock: forbidden");
 
     expect(await vault.inPrivateLiquidationMode()).eq(false);
     await timelock
@@ -1730,7 +1379,7 @@ describe("Timelock", function () {
   it("setLiquidator", async () => {
     await expect(
       timelock.connect(user0).setLiquidator(vault.address, user1.address, true)
-    ).to.be.revertedWith("Timelock: forbidden");
+    ).to.be.revertedWith("KtxTimelock: forbidden");
 
     expect(await vault.isLiquidator(user1.address)).eq(false);
     await timelock
@@ -1789,25 +1438,23 @@ describe("Timelock", function () {
   });
 
   it("redeemUsdg", async () => {
-    await timelock.setContractHandler(user0.address, true);
-
     await expect(
       timelock
         .connect(user0)
         .redeemUsdg(vault.address, bnb.address, expandDecimals(1000, 18))
-    ).to.be.revertedWith("Timelock: forbidden");
+    ).to.be.revertedWith("KtxTimelock: forbidden");
 
     await expect(
       timelock
         .connect(wallet)
         .redeemUsdg(vault.address, bnb.address, expandDecimals(1000, 18))
-    ).to.be.revertedWith("Timelock: action not signalled");
+    ).to.be.revertedWith("KtxTimelock: action not signalled");
 
     await expect(
       timelock
         .connect(user0)
         .signalRedeemUsdg(vault.address, bnb.address, expandDecimals(1000, 18))
-    ).to.be.revertedWith("Timelock: forbidden");
+    ).to.be.revertedWith("KtxTimelock: forbidden");
 
     await timelock
       .connect(wallet)
@@ -1817,7 +1464,7 @@ describe("Timelock", function () {
       timelock
         .connect(wallet)
         .redeemUsdg(vault.address, bnb.address, expandDecimals(1000, 18))
-    ).to.be.revertedWith("Timelock: action time not yet passed");
+    ).to.be.revertedWith("KtxTimelock: action time not yet passed");
 
     await increaseTime(provider, 5 * 24 * 60 * 60);
     await mineBlock(provider);
@@ -1858,7 +1505,7 @@ describe("Timelock", function () {
       true // isShortable
     );
 
-    await increaseTime(provider, 5 * 24 * 60 * 60);
+    await increaseTime(provider, 7 * 24 * 60 * 60 + 10);
     await mineBlock(provider);
 
     await timelock.connect(wallet).vaultSetTokenConfig(
@@ -1875,9 +1522,11 @@ describe("Timelock", function () {
     await bnb.mint(vault.address, expandDecimals(3, 18));
     await vault.buyUSDG(bnb.address, user3.address);
 
-    await timelock.signalSetGov(vault.address, user1.address);
+    await timelock
+      .connect(tokenManager)
+      .signalSetGov(vault.address, user1.address);
 
-    await increaseTime(provider, 5 * 24 * 60 * 60);
+    await increaseTime(provider, 7 * 24 * 60 * 60 + 10);
     await mineBlock(provider);
 
     await timelock.setGov(vault.address, user1.address);

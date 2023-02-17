@@ -1,9 +1,9 @@
-const { expandDecimals } = require("../../shared/utilities");
-const { toUsd } = require("../../shared/units");
-const { deployContract } = require("../../shared/fixtures");
+const { expandDecimals } = require("./shared/utilities");
+const { toUsd } = require("./shared/units");
+const { deployContract } = require("./shared/fixtures");
 
 const errors = [
-  "Vault: zero error",
+  "Vault: zero error", // 0
   "Vault: already initialized",
   "Vault: invalid _maxLeverage",
   "Vault: invalid _taxBasisPoints",
@@ -13,7 +13,7 @@ const errors = [
   "Vault: invalid _stableSwapFeeBasisPoints",
   "Vault: invalid _marginFeeBasisPoints",
   "Vault: invalid _liquidationFeeUsd",
-  "Vault: invalid _fundingInterval",
+  "Vault: invalid _fundingInterval", // 10
   "Vault: invalid _fundingRateFactor",
   "Vault: invalid _stableFundingRateFactor",
   "Vault: token not whitelisted",
@@ -23,7 +23,7 @@ const errors = [
   "Vault: invalid tokenAmount",
   "Vault: invalid usdgAmount",
   "Vault: _token not whitelisted",
-  "Vault: invalid usdgAmount",
+  "Vault: invalid usdgAmount", // 20
   "Vault: invalid redemptionAmount",
   "Vault: invalid amountOut",
   "Vault: swaps not enabled",
@@ -33,7 +33,7 @@ const errors = [
   "Vault: invalid amountIn",
   "Vault: leverage not enabled",
   "Vault: insufficient collateral for fees",
-  "Vault: invalid position.size",
+  "Vault: invalid position.size", // 30
   "Vault: empty position",
   "Vault: position size exceeded",
   "Vault: position collateral exceeded",
@@ -43,7 +43,7 @@ const errors = [
   "Vault: invalid position",
   "Vault: invalid _averagePrice",
   "Vault: collateral should be withdrawn",
-  "Vault: _size must be more than _collateral",
+  "Vault: _size must be more than _collateral", // 40
   "Vault: invalid msg.sender",
   "Vault: mismatched tokens",
   "Vault: _collateralToken not whitelisted",
@@ -80,8 +80,8 @@ async function initVault(vault, router, usdg, priceFeed) {
     usdg.address, // usdg
     priceFeed.address, // priceFeed
     toUsd(5), // liquidationFeeUsd
-    600000, // fundingRateFactor
-    600000 // stableFundingRateFactor
+    600, // fundingRateFactor
+    600 // stableFundingRateFactor
   );
 
   const vaultUtils = await initVaultUtils(vault);
@@ -106,7 +106,7 @@ function getBnbConfig(bnb, bnbPriceFeed) {
   return [
     bnb.address, // _token
     18, // _tokenDecimals
-    10000, // _tokenWeight
+    20000, // _tokenWeight
     75, // _minProfitBps,
     0, // _maxUsdgAmount
     false, // _isStable
@@ -118,7 +118,7 @@ function getEthConfig(eth, ethPriceFeed) {
   return [
     eth.address, // _token
     18, // _tokenDecimals
-    10000, // _tokenWeight
+    20000, // _tokenWeight
     75, // _minProfitBps
     0, // _maxUsdgAmount
     false, // _isStable
@@ -130,7 +130,7 @@ function getBtcConfig(btc, btcPriceFeed) {
   return [
     btc.address, // _token
     8, // _tokenDecimals
-    10000, // _tokenWeight
+    20000, // _tokenWeight
     75, // _minProfitBps
     0, // _maxUsdgAmount
     false, // _isStable
@@ -142,7 +142,19 @@ function getDaiConfig(dai, daiPriceFeed) {
   return [
     dai.address, // _token
     18, // _tokenDecimals
-    10000, // _tokenWeight
+    20000, // _tokenWeight
+    75, // _minProfitBps
+    0, // _maxUsdgAmount
+    true, // _isStable
+    false, // _isShortable
+  ];
+}
+
+function getBusdConfig(dai, daiPriceFeed) {
+  return [
+    dai.address, // _token
+    18, // _tokenDecimals
+    60000, // _tokenWeight
     75, // _minProfitBps
     0, // _maxUsdgAmount
     true, // _isStable

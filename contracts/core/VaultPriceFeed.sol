@@ -26,7 +26,7 @@ contract VaultPriceFeed is IVaultPriceFeed {
     address public gov;
     address public chainlinkFlags;
 
-    bool public isAmmEnabled = true;
+    bool public isAmmEnabled = false;
     bool public isSecondaryPriceEnabled = true;
     bool public useV2Pricing = false;
     bool public favorPrimaryPrice = false;

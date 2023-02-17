@@ -7,6 +7,7 @@ import "../libraries/utils/ReentrancyGuard.sol";
 
 import "./interfaces/IVault.sol";
 import "./interfaces/IKlpManager.sol";
+import "./interfaces/IShortsTracker.sol";
 import "../tokens/interfaces/IUSDG.sol";
 import "../tokens/interfaces/IMintable.sol";
 import "../access/Governable.sol";
@@ -19,20 +20,24 @@ contract KlpManager is ReentrancyGuard, Governable, IKlpManager {
 
     uint256 public constant PRICE_PRECISION = 10 ** 30;
     uint256 public constant USDG_DECIMALS = 18;
+    uint256 public constant KLP_PRECISION = 10 ** 18;
     uint256 public constant MAX_COOLDOWN_DURATION = 48 hours;
+    uint256 public constant BASIS_POINTS_DIVISOR = 10000;
 
-    IVault public vault;
-    address public usdg;
-    address public klp;
+    IVault public override vault;
+    IShortsTracker public shortsTracker;
+    address public override usdg;
+    address public override klp;
 
     uint256 public override cooldownDuration;
-    mapping (address => uint256) public override lastAddedAt;
+    mapping(address => uint256) public override lastAddedAt;
 
     uint256 public aumAddition;
     uint256 public aumDeduction;
 
     bool public inPrivateMode;
-    mapping (address => bool) public isHandler;
+    uint256 public shortsTrackerAveragePriceWeight;
+    mapping(address => bool) public isHandler;
 
     event AddLiquidity(
         address account,
@@ -54,11 +59,18 @@ contract KlpManager is ReentrancyGuard, Governable, IKlpManager {
         uint256 amountOut
     );
 
-    constructor(address _vault, address _usdg, address _klp, uint256 _cooldownDuration) public {
+    constructor(
+        address _vault,
+        address _usdg,
+        address _klp,
+        address _shortsTracker,
+        uint256 _cooldownDuration
+    ) public {
         gov = msg.sender;
         vault = IVault(_vault);
         usdg = _usdg;
         klp = _klp;
+        shortsTracker = IShortsTracker(_shortsTracker);
         cooldownDuration = _cooldownDuration;
     }
 
@@ -66,38 +78,123 @@ contract KlpManager is ReentrancyGuard, Governable, IKlpManager {
         inPrivateMode = _inPrivateMode;
     }
 
+    function setShortsTracker(IShortsTracker _shortsTracker) external onlyGov {
+        shortsTracker = _shortsTracker;
+    }
+
+    function setShortsTrackerAveragePriceWeight(
+        uint256 _shortsTrackerAveragePriceWeight
+    ) external override onlyGov {
+        require(
+            shortsTrackerAveragePriceWeight <= BASIS_POINTS_DIVISOR,
+            "KlpManager: invalid weight"
+        );
+        shortsTrackerAveragePriceWeight = _shortsTrackerAveragePriceWeight;
+    }
+
     function setHandler(address _handler, bool _isActive) external onlyGov {
         isHandler[_handler] = _isActive;
     }
 
-    function setCooldownDuration(uint256 _cooldownDuration) external onlyGov {
-        require(_cooldownDuration <= MAX_COOLDOWN_DURATION, "KlpManager: invalid _cooldownDuration");
+    function setCooldownDuration(
+        uint256 _cooldownDuration
+    ) external override onlyGov {
+        require(
+            _cooldownDuration <= MAX_COOLDOWN_DURATION,
+            "KlpManager: invalid _cooldownDuration"
+        );
         cooldownDuration = _cooldownDuration;
     }
 
-    function setAumAdjustment(uint256 _aumAddition, uint256 _aumDeduction) external onlyGov {
+    function setAumAdjustment(
+        uint256 _aumAddition,
+        uint256 _aumDeduction
+    ) external onlyGov {
         aumAddition = _aumAddition;
         aumDeduction = _aumDeduction;
     }
 
-    function addLiquidity(address _token, uint256 _amount, uint256 _minUsdg, uint256 _minKlp) external override nonReentrant returns (uint256) {
-        if (inPrivateMode) { revert("KlpManager: action not enabled"); }
-        return _addLiquidity(msg.sender, msg.sender, _token, _amount, _minUsdg, _minKlp);
+    function addLiquidity(
+        address _token,
+        uint256 _amount,
+        uint256 _minUsdg,
+        uint256 _minKlp
+    ) external override nonReentrant returns (uint256) {
+        if (inPrivateMode) {
+            revert("KlpManager: action not enabled");
+        }
+        return
+            _addLiquidity(
+                msg.sender,
+                msg.sender,
+                _token,
+                _amount,
+                _minUsdg,
+                _minKlp
+            );
     }
 
-    function addLiquidityForAccount(address _fundingAccount, address _account, address _token, uint256 _amount, uint256 _minUsdg, uint256 _minKlp) external override nonReentrant returns (uint256) {
+    function addLiquidityForAccount(
+        address _fundingAccount,
+        address _account,
+        address _token,
+        uint256 _amount,
+        uint256 _minUsdg,
+        uint256 _minKlp
+    ) external override nonReentrant returns (uint256) {
         _validateHandler();
-        return _addLiquidity(_fundingAccount, _account, _token, _amount, _minUsdg, _minKlp);
+        return
+            _addLiquidity(
+                _fundingAccount,
+                _account,
+                _token,
+                _amount,
+                _minUsdg,
+                _minKlp
+            );
     }
 
-    function removeLiquidity(address _tokenOut, uint256 _klpAmount, uint256 _minOut, address _receiver) external override nonReentrant returns (uint256) {
-        if (inPrivateMode) { revert("KlpManager: action not enabled"); }
-        return _removeLiquidity(msg.sender, _tokenOut, _klpAmount, _minOut, _receiver);
+    function removeLiquidity(
+        address _tokenOut,
+        uint256 _klpAmount,
+        uint256 _minOut,
+        address _receiver
+    ) external override nonReentrant returns (uint256) {
+        if (inPrivateMode) {
+            revert("KlpManager: action not enabled");
+        }
+        return
+            _removeLiquidity(
+                msg.sender,
+                _tokenOut,
+                _klpAmount,
+                _minOut,
+                _receiver
+            );
     }
 
-    function removeLiquidityForAccount(address _account, address _tokenOut, uint256 _klpAmount, uint256 _minOut, address _receiver) external override nonReentrant returns (uint256) {
+    function removeLiquidityForAccount(
+        address _account,
+        address _tokenOut,
+        uint256 _klpAmount,
+        uint256 _minOut,
+        address _receiver
+    ) external override nonReentrant returns (uint256) {
         _validateHandler();
-        return _removeLiquidity(_account, _tokenOut, _klpAmount, _minOut, _receiver);
+        return
+            _removeLiquidity(
+                _account,
+                _tokenOut,
+                _klpAmount,
+                _minOut,
+                _receiver
+            );
+    }
+
+    function getPrice(bool _maximise) external view returns (uint256) {
+        uint256 aum = getAum(_maximise);
+        uint256 supply = IERC20(klp).totalSupply();
+        return aum.mul(KLP_PRECISION).div(supply);
     }
 
     function getAums() public view returns (uint256[] memory) {
@@ -107,7 +204,9 @@ contract KlpManager is ReentrancyGuard, Governable, IKlpManager {
         return amounts;
     }
 
-    function getAumInUsdg(bool maximise) public view returns (uint256) {
+    function getAumInUsdg(
+        bool maximise
+    ) public view override returns (uint256) {
         uint256 aum = getAum(maximise);
         return aum.mul(10 ** USDG_DECIMALS).div(PRICE_PRECISION);
     }
@@ -116,6 +215,7 @@ contract KlpManager is ReentrancyGuard, Governable, IKlpManager {
         uint256 length = vault.allWhitelistedTokensLength();
         uint256 aum = aumAddition;
         uint256 shortProfits = 0;
+        IVault _vault = vault;
 
         for (uint256 i = 0; i < length; i++) {
             address token = vault.allWhitelistedTokens(i);
@@ -125,20 +225,25 @@ contract KlpManager is ReentrancyGuard, Governable, IKlpManager {
                 continue;
             }
 
-            uint256 price = maximise ? vault.getMaxPrice(token) : vault.getMinPrice(token);
-            uint256 poolAmount = vault.poolAmounts(token);
-            uint256 decimals = vault.tokenDecimals(token);
+            uint256 price = maximise
+                ? _vault.getMaxPrice(token)
+                : _vault.getMinPrice(token);
+            uint256 poolAmount = _vault.poolAmounts(token);
+            uint256 decimals = _vault.tokenDecimals(token);
 
-            if (vault.stableTokens(token)) {
+            if (_vault.stableTokens(token)) {
                 aum = aum.add(poolAmount.mul(price).div(10 ** decimals));
             } else {
                 // add global short profit / loss
-                uint256 size = vault.globalShortSizes(token);
+                uint256 size = _vault.globalShortSizes(token);
+
                 if (size > 0) {
-                    uint256 averagePrice = vault.globalShortAveragePrices(token);
-                    uint256 priceDelta = averagePrice > price ? averagePrice.sub(price) : price.sub(averagePrice);
-                    uint256 delta = size.mul(priceDelta).div(averagePrice);
-                    if (price > averagePrice) {
+                    (uint256 delta, bool hasProfit) = getGlobalShortDelta(
+                        token,
+                        price,
+                        size
+                    );
+                    if (!hasProfit) {
                         // add losses from shorts
                         aum = aum.add(delta);
                     } else {
@@ -146,10 +251,14 @@ contract KlpManager is ReentrancyGuard, Governable, IKlpManager {
                     }
                 }
 
-                aum = aum.add(vault.guaranteedUsd(token));
+                aum = aum.add(_vault.guaranteedUsd(token));
 
-                uint256 reservedAmount = vault.reservedAmounts(token);
-                aum = aum.add(poolAmount.sub(reservedAmount).mul(price).div(10 ** decimals));
+                uint256 reservedAmount = _vault.reservedAmounts(token);
+                aum = aum.add(
+                    poolAmount.sub(reservedAmount).mul(price).div(
+                        10 ** decimals
+                    )
+                );
             }
         }
 
@@ -157,32 +266,108 @@ contract KlpManager is ReentrancyGuard, Governable, IKlpManager {
         return aumDeduction > aum ? 0 : aum.sub(aumDeduction);
     }
 
-    function _addLiquidity(address _fundingAccount, address _account, address _token, uint256 _amount, uint256 _minUsdg, uint256 _minKlp) private returns (uint256) {
+    function getGlobalShortDelta(
+        address _token,
+        uint256 _price,
+        uint256 _size
+    ) public view returns (uint256, bool) {
+        uint256 averagePrice = getGlobalShortAveragePrice(_token);
+        uint256 priceDelta = averagePrice > _price
+            ? averagePrice.sub(_price)
+            : _price.sub(averagePrice);
+        uint256 delta = _size.mul(priceDelta).div(averagePrice);
+        return (delta, averagePrice > _price);
+    }
+
+    function getGlobalShortAveragePrice(
+        address _token
+    ) public view returns (uint256) {
+        IShortsTracker _shortsTracker = shortsTracker;
+        if (
+            address(_shortsTracker) == address(0) ||
+            !_shortsTracker.isGlobalShortDataReady()
+        ) {
+            return vault.globalShortAveragePrices(_token);
+        }
+
+        uint256 _shortsTrackerAveragePriceWeight = shortsTrackerAveragePriceWeight;
+        if (_shortsTrackerAveragePriceWeight == 0) {
+            return vault.globalShortAveragePrices(_token);
+        } else if (_shortsTrackerAveragePriceWeight == BASIS_POINTS_DIVISOR) {
+            return _shortsTracker.globalShortAveragePrices(_token);
+        }
+
+        uint256 vaultAveragePrice = vault.globalShortAveragePrices(_token);
+        uint256 shortsTrackerAveragePrice = _shortsTracker
+            .globalShortAveragePrices(_token);
+
+        return
+            vaultAveragePrice
+                .mul(BASIS_POINTS_DIVISOR.sub(_shortsTrackerAveragePriceWeight))
+                .add(
+                    shortsTrackerAveragePrice.mul(
+                        _shortsTrackerAveragePriceWeight
+                    )
+                )
+                .div(BASIS_POINTS_DIVISOR);
+    }
+
+    function _addLiquidity(
+        address _fundingAccount,
+        address _account,
+        address _token,
+        uint256 _amount,
+        uint256 _minUsdg,
+        uint256 _minKlp
+    ) private returns (uint256) {
         require(_amount > 0, "KlpManager: invalid _amount");
 
         // calculate aum before buyUSDG
         uint256 aumInUsdg = getAumInUsdg(true);
         uint256 klpSupply = IERC20(klp).totalSupply();
 
-        IERC20(_token).safeTransferFrom(_fundingAccount, address(vault), _amount);
+        IERC20(_token).safeTransferFrom(
+            _fundingAccount,
+            address(vault),
+            _amount
+        );
         uint256 usdgAmount = vault.buyUSDG(_token, address(this));
         require(usdgAmount >= _minUsdg, "KlpManager: insufficient USDG output");
 
-        uint256 mintAmount = aumInUsdg == 0 ? usdgAmount : usdgAmount.mul(klpSupply).div(aumInUsdg);
+        uint256 mintAmount = aumInUsdg == 0
+            ? usdgAmount
+            : usdgAmount.mul(klpSupply).div(aumInUsdg);
         require(mintAmount >= _minKlp, "KlpManager: insufficient KLP output");
 
         IMintable(klp).mint(_account, mintAmount);
 
         lastAddedAt[_account] = block.timestamp;
 
-        emit AddLiquidity(_account, _token, _amount, aumInUsdg, klpSupply, usdgAmount, mintAmount);
+        emit AddLiquidity(
+            _account,
+            _token,
+            _amount,
+            aumInUsdg,
+            klpSupply,
+            usdgAmount,
+            mintAmount
+        );
 
         return mintAmount;
     }
 
-    function _removeLiquidity(address _account, address _tokenOut, uint256 _klpAmount, uint256 _minOut, address _receiver) private returns (uint256) {
+    function _removeLiquidity(
+        address _account,
+        address _tokenOut,
+        uint256 _klpAmount,
+        uint256 _minOut,
+        address _receiver
+    ) private returns (uint256) {
         require(_klpAmount > 0, "KlpManager: invalid _klpAmount");
-        require(lastAddedAt[_account].add(cooldownDuration) <= block.timestamp, "KlpManager: cooldown duration not yet passed");
+        require(
+            lastAddedAt[_account].add(cooldownDuration) <= block.timestamp,
+            "KlpManager: cooldown duration not yet passed"
+        );
 
         // calculate aum before sellUSDG
         uint256 aumInUsdg = getAumInUsdg(false);
@@ -200,7 +385,15 @@ contract KlpManager is ReentrancyGuard, Governable, IKlpManager {
         uint256 amountOut = vault.sellUSDG(_tokenOut, _receiver);
         require(amountOut >= _minOut, "KlpManager: insufficient output");
 
-        emit RemoveLiquidity(_account, _tokenOut, _klpAmount, aumInUsdg, klpSupply, usdgAmount, amountOut);
+        emit RemoveLiquidity(
+            _account,
+            _tokenOut,
+            _klpAmount,
+            aumInUsdg,
+            klpSupply,
+            usdgAmount,
+            amountOut
+        );
 
         return amountOut;
     }

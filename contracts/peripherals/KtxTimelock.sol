@@ -25,7 +25,7 @@ contract KtxTimelock is IKtxTimelock {
     uint256 public constant PRICE_PRECISION = 10 ** 30;
     uint256 public constant MAX_BUFFER = 7 days;
     uint256 public constant MAX_FEE_BASIS_POINTS = 300; // 3%
-    uint256 public constant MAX_FUNDING_RATE_FACTOR = 200; // 0.02%
+    uint256 public constant MAX_FUNDING_RATE_FACTOR = 1000000; // 0.1%
     uint256 public constant MAX_LEVERAGE_VALIDATION = 500000; // 50x
 
     uint256 public buffer;

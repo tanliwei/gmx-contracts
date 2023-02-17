@@ -6,7 +6,6 @@ import "../access/Governable.sol";
 import "../peripherals/interfaces/ITimelock.sol";
 
 contract RewardManager is Governable {
-
     bool public isInitialized;
 
     ITimelock public timelock;
@@ -73,13 +72,10 @@ contract RewardManager is Governable {
 
     function updateEsKtxHandlers() external onlyGov {
         timelock.managedSetHandler(esKtx, rewardRouter, true);
-
         timelock.managedSetHandler(esKtx, stakedKtxDistributor, true);
         timelock.managedSetHandler(esKtx, stakedKlpDistributor, true);
-
         timelock.managedSetHandler(esKtx, stakedKtxTracker, true);
         timelock.managedSetHandler(esKtx, stakedKlpTracker, true);
-
         timelock.managedSetHandler(esKtx, ktxVester, true);
         timelock.managedSetHandler(esKtx, klpVester, true);
     }
